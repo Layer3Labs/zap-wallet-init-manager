@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS wallet_initializations (
     duration_ms INTEGER,
     error_message TEXT,
     gas_used INTEGER,
+    total_fee_eth REAL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -102,6 +103,7 @@ pub struct InitializationRecord {
     pub duration_ms: Option<i64>,
     pub error_message: Option<String>,
     pub gas_used: Option<i64>,
+    pub total_fee_eth: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -227,6 +229,7 @@ impl InitializationDb {
         record_id: i64,
         tx_hash: Option<&Bytes32>,
         gas_used: Option<u64>,
+        total_fee: Option<u64>,
     ) -> Result<()> {
         let completed_at = get_ntp_time().await;
         
@@ -273,16 +276,19 @@ impl InitializationDb {
             RESET
         );
 
+        // Convert fee from Fuel units to ETH (1 ETH = 10^9 Fuel units)
+        let total_fee_eth = total_fee.map(|fee| fee as f64 / 1_000_000_000.0);
+
         {
             let conn = self.conn.lock().unwrap();
 
             let mut sql = "UPDATE wallet_initializations
-                SET status = ?1, job_completed_at = ?2, duration_ms = ?3, gas_used = ?4".to_string();
+                SET status = ?1, job_completed_at = ?2, duration_ms = ?3, gas_used = ?4, total_fee_eth = ?5".to_string();
 
-            let mut param_count = 5;
+            let mut param_count = 6;
             if tx_hash.is_some() {
-                sql.push_str(", tx_hash = ?5");
-                param_count = 6;
+                sql.push_str(", tx_hash = ?6");
+                param_count = 7;
             }
 
             sql.push_str(&format!(" WHERE id = ?{}", param_count));
@@ -296,6 +302,7 @@ impl InitializationDb {
                         completed_at.to_rfc3339(),
                         duration_ms,
                         gas_used.map(|g| g as i64),
+                        total_fee_eth,
                         tx_hash_str,
                         record_id
                     ],
@@ -308,6 +315,7 @@ impl InitializationDb {
                         completed_at.to_rfc3339(),
                         duration_ms,
                         gas_used.map(|g| g as i64),
+                        total_fee_eth,
                         record_id
                     ],
                 )?;
@@ -465,7 +473,7 @@ impl InitializationDb {
                 "SELECT
                     id, wallet_address, eoa_worker_id, eoa_address,
                     tx_hash, status, job_queued_at, job_started_at,
-                    job_completed_at, duration_ms, error_message, gas_used
+                    job_completed_at, duration_ms, error_message, gas_used, total_fee_eth
                 FROM wallet_initializations
                 ORDER BY job_queued_at DESC
                 LIMIT ?1"
@@ -489,6 +497,7 @@ impl InitializationDb {
                     duration_ms: row.get(9)?,
                     error_message: row.get(10)?,
                     gas_used: row.get(11)?,
+                    total_fee_eth: row.get(12)?,
                 })
             })?
             .collect::<SqliteResult<Vec<_>>>()?;
@@ -509,7 +518,7 @@ impl InitializationDb {
                 "SELECT
                     id, wallet_address, eoa_worker_id, eoa_address,
                     tx_hash, status, job_queued_at, job_started_at,
-                    job_completed_at, duration_ms, error_message, gas_used
+                    job_completed_at, duration_ms, error_message, gas_used, total_fee_eth
                 FROM wallet_initializations
                 WHERE wallet_address = ?1
                 ORDER BY job_queued_at DESC"
@@ -533,6 +542,7 @@ impl InitializationDb {
                     duration_ms: row.get(9)?,
                     error_message: row.get(10)?,
                     gas_used: row.get(11)?,
+                    total_fee_eth: row.get(12)?,
                 })
             })?
             .collect::<SqliteResult<Vec<_>>>()?;
@@ -556,7 +566,9 @@ impl InitializationDb {
                     SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_jobs,
                     AVG(CASE WHEN status = 'completed' THEN duration_ms ELSE NULL END) as avg_duration_ms,
                     MIN(CASE WHEN status = 'completed' THEN duration_ms ELSE NULL END) as min_duration_ms,
-                    MAX(CASE WHEN status = 'completed' THEN duration_ms ELSE NULL END) as max_duration_ms
+                    MAX(CASE WHEN status = 'completed' THEN duration_ms ELSE NULL END) as max_duration_ms,
+                    SUM(CASE WHEN status = 'completed' THEN total_fee_eth ELSE NULL END) as total_fees_eth,
+                    AVG(CASE WHEN status = 'completed' THEN total_fee_eth ELSE NULL END) as avg_fee_eth
                 FROM wallet_initializations
                 WHERE eoa_worker_id IS NOT NULL
                 GROUP BY eoa_worker_id, eoa_address
@@ -573,6 +585,8 @@ impl InitializationDb {
                     avg_duration_ms: row.get::<_, Option<f64>>(5)?.map(|d| d as u64),
                     min_duration_ms: row.get::<_, Option<i64>>(6)?.map(|d| d as u64),
                     max_duration_ms: row.get::<_, Option<i64>>(7)?.map(|d| d as u64),
+                    total_fees_eth: row.get::<_, Option<f64>>(8)?,
+                    avg_fee_eth: row.get::<_, Option<f64>>(9)?,
                 })
             })?
             .collect::<SqliteResult<Vec<_>>>()?;
@@ -608,11 +622,11 @@ impl InitializationDb {
         println!("\nTime source: {}", ntp_status);
 
         // Use box drawing characters for better formatting
-        println!("\n┌────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐");
-        println!("│       WALLET INITIALIZATION RECORDS                                                                                                                                                                                                                                                       │");
-        println!("├────┼──────────────────────────────────────────────────────────────────────┼────────┼──────────────────────────────────────────────────────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼────────────┼──────────────┼───────────┼─────────────────────┤");
-        println!("│ ID │ Wallet Address                                                       │ Worker │ Transaction Hash                                                     │ Queued At           │ Started At          │ Completed At        │ Status     │ Duration     │ Gas Used  │ Error               │");
-        println!("├────┼──────────────────────────────────────────────────────────────────────┼────────┼──────────────────────────────────────────────────────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼────────────┼──────────────┼───────────┼─────────────────────┤");
+        println!("\n┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐");
+        println!("│ ZAP WALLET INITIALIZATION RECORDS                                                                                                                                                                                                                                                                       │");
+        println!("├────┼──────────────────────────────────────────────────────────────────────┼────────┼──────────────────────────────────────────────────────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼────────────┼──────────────┼───────────┼─────────────┼─────────────────────┤");
+        println!("│ ID │ Wallet Address                                                       │ Worker │ Transaction Hash                                                     │ Queued At           │ Started At          │ Completed At        │ Status     │ Duration     │ Gas Used  │ Fee (ETH)   │ Error               │");
+        println!("├────┼──────────────────────────────────────────────────────────────────────┼────────┼──────────────────────────────────────────────────────────────────────┼─────────────────────┼─────────────────────┼─────────────────────┼────────────┼──────────────┼───────────┼─────────────┼─────────────────────┤");
 
         for record in records {
             let queued = record.job_queued_at.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -643,6 +657,11 @@ impl InitializationDb {
                 None => "        -".to_string(),
             };
 
+            let fee_str = match record.total_fee_eth {
+                Some(fee) => format!("{:>10.9}", fee),
+                None => "         -".to_string(),
+            };
+
             let error_str = match &record.error_message {
                 Some(msg) => {
                     if msg.len() > 19 {
@@ -668,7 +687,7 @@ impl InitializationDb {
 
             let tx_hash_str = record.tx_hash.as_deref().unwrap_or("-");
 
-            println!("│{:>3} │ {:68} │ {} │ {:68} │ {:19} │ {:19} │ {:19} │ {:9} │ {:12} │ {:9} │ {:19} │",
+            println!("│{:>3} │ {:68} │ {} │ {:68} │ {:19} │ {:19} │ {:19} │ {:10} │ {:12} │ {:9} │ {:10} │ {:19} │",
                 record.id,
                 record.wallet_address,
                 worker_str,
@@ -679,11 +698,12 @@ impl InitializationDb {
                 status_str,
                 duration_str,
                 gas_str,
+                fee_str,
                 error_str
             );
         }
 
-        println!("└────┴──────────────────────────────────────────────────────────────────────┴────────┴──────────────────────────────────────────────────────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴────────────┴──────────────┴───────────┴─────────────────────┘");
+        println!("└────┴──────────────────────────────────────────────────────────────────────┴────────┴──────────────────────────────────────────────────────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┴────────────┴──────────────┴───────────┴─────────────┴─────────────────────┘");
 
         // Print summary
         let stats = self.get_stats().await?;
@@ -724,6 +744,21 @@ impl InitializationDb {
             println!("└─ Average Duration: N/A");
         }
 
+        // Calculate and display total fees if any completed transactions
+        if stats.successful_initializations > 0 {
+            let total_fees: f64 = {
+                let conn = self.conn.lock().unwrap();
+                conn.query_row(
+                    "SELECT COALESCE(SUM(total_fee_eth), 0.0) FROM wallet_initializations WHERE status = ?1",
+                    params![InitStatus::Completed.as_str()],
+                    |row| row.get(0),
+                ).unwrap_or(0.0)
+            };
+            println!("\nFEE SUMMARY:");
+            println!("├─ Total Fees: {:.9} ETH", total_fees);
+            println!("└─ Average Fee per Init: {:.9} ETH", total_fees / stats.successful_initializations as f64);
+        }
+
         Ok(())
     }
 
@@ -738,7 +773,7 @@ impl InitializationDb {
                 "SELECT
                     id, wallet_address, eoa_worker_id, eoa_address,
                     tx_hash, status, job_queued_at, job_started_at,
-                    job_completed_at, duration_ms, error_message, gas_used
+                    job_completed_at, duration_ms, error_message, gas_used, total_fee_eth
                 FROM wallet_initializations
                 WHERE lower(wallet_address) LIKE ?1
                 ORDER BY job_queued_at DESC"
@@ -763,6 +798,7 @@ impl InitializationDb {
                     duration_ms: row.get(9)?,
                     error_message: row.get(10)?,
                     gas_used: row.get(11)?,
+                    total_fee_eth: row.get(12)?,
                 })
             })?
             .collect::<SqliteResult<Vec<_>>>()?;
@@ -800,6 +836,10 @@ impl InitializationDb {
 
                 if let Some(gas) = record.gas_used {
                     println!("├─ Gas Used: {}", gas);
+                }
+
+                if let Some(fee) = record.total_fee_eth {
+                    println!("├─ Fee: {:.6} ETH", fee);
                 }
 
                 if let Some(error) = &record.error_message {
@@ -840,6 +880,8 @@ pub struct WorkerPerformance {
     pub avg_duration_ms: Option<u64>,
     pub min_duration_ms: Option<u64>,
     pub max_duration_ms: Option<u64>,
+    pub total_fees_eth: Option<f64>,
+    pub avg_fee_eth: Option<f64>,
 }
 
 #[cfg(test)]
@@ -876,9 +918,10 @@ mod tests {
         let tx_hash = create_test_tx_hash(1);
         db.update_tx_hash(record_id, &tx_hash).await?;
 
-        // 4. Record completion
+        // 4. Record completion with fee
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        db.record_job_completed(record_id, Some(&tx_hash), Some(250_000)).await?;
+        let total_fee = 2_500_000_000; // 2.5 ETH in Fuel units
+        db.record_job_completed(record_id, Some(&tx_hash), Some(250_000), Some(total_fee)).await?;
 
         // Verify single row with complete lifecycle
         let history = db.get_wallet_history(&wallet_addr).await?;
@@ -890,6 +933,7 @@ mod tests {
         assert!(record.job_started_at.unwrap() < record.job_completed_at.unwrap());
         assert!(record.duration_ms.unwrap() >= 100);
         assert_eq!(record.gas_used, Some(250_000));
+        assert_eq!(record.total_fee_eth, Some(2.5));
 
         Ok(())
     }
@@ -934,7 +978,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_worker_stats() -> Result<()> {
+    async fn test_worker_stats_with_fees() -> Result<()> {
         let db = InitializationDb::new(":memory:").await?;
 
         // Create test data for multiple workers
@@ -953,7 +997,8 @@ mod tests {
             if i % 4 == 0 {
                 db.record_job_failed(record_id, "Test failure").await?;
             } else {
-                db.record_job_completed(record_id, Some(&tx_hash), Some(200_000 + (i * 10_000))).await?;
+                let fee = 1_000_000_000 + (i * 100_000_000); // 1 ETH + 0.1 ETH per iteration
+                db.record_job_completed(record_id, Some(&tx_hash), Some(200_000 + (i * 10_000)), Some(fee)).await?;
             }
         }
 
@@ -961,10 +1006,14 @@ mod tests {
         let worker_stats = db.get_worker_stats().await?;
         assert!(!worker_stats.is_empty());
 
-        // Verify each worker has processed jobs
+        // Verify each worker has processed jobs and fees
         for stat in &worker_stats {
             assert!(stat.total_jobs > 0);
             assert!(stat.successful_jobs > 0 || stat.failed_jobs > 0);
+            if stat.successful_jobs > 0 {
+                assert!(stat.total_fees_eth.is_some());
+                assert!(stat.avg_fee_eth.is_some());
+            }
         }
 
         Ok(())
@@ -988,7 +1037,8 @@ mod tests {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50 + i * 20)).await;
 
                 if i % 2 == 0 {
-                    db.record_job_completed(record_id, Some(&tx_hash), Some(250_000 + i * 10_000)).await?;
+                    let fee = 2_500_000_000 + (i * 100_000_000); // 2.5 ETH + 0.1 ETH per iteration
+                    db.record_job_completed(record_id, Some(&tx_hash), Some(250_000 + i * 10_000), Some(fee)).await?;
                 } else {
                     db.record_job_failed(record_id, "Network timeout").await?;
                 }
@@ -999,6 +1049,35 @@ mod tests {
         // Print all records
         println!("\n=== Testing print_all_records ===");
         db.print_all_records().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fee_conversion() -> Result<()> {
+        let db = InitializationDb::new(":memory:").await?;
+        let wallet_addr = create_test_address(100);
+
+        // Test various fee amounts
+        let test_fees = vec![
+            (1_000_000_000, 1.0),           // 1 ETH
+            (500_000_000, 0.5),              // 0.5 ETH
+            (2_500_000_000, 2.5),            // 2.5 ETH
+            (100_000_000, 0.1),              // 0.1 ETH
+            (1_234_567_890, 1.23456789),     // 1.23456789 ETH
+        ];
+
+        for (i, (fuel_units, expected_eth)) in test_fees.iter().enumerate() {
+            let record_id = db.record_job_queued(&wallet_addr).await?;
+            let tx_hash = create_test_tx_hash(100 + i as u64);
+
+            db.record_job_completed(record_id, Some(&tx_hash), Some(100_000), Some(*fuel_units)).await?;
+
+            let history = db.get_wallet_history(&wallet_addr).await?;
+            let last_record = history.iter().find(|r| r.id == record_id).unwrap();
+
+            assert!((last_record.total_fee_eth.unwrap() - expected_eth).abs() < 0.0000001);
+        }
 
         Ok(())
     }

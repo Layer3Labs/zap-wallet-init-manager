@@ -73,6 +73,7 @@ pub struct WalletInitRequest {
 pub struct InitCallSuccessData {
     pub tx_id: Bytes32,
     pub total_gas: u64,
+    pub total_fee: u64,
 }
 
 /// Internal job structure with cache references

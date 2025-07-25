@@ -128,7 +128,12 @@ impl FuelEOAWorker {
                             }
 
                             // Then record completion
-                            if let Err(e) = db.record_job_completed(rec_id, Some(&result.tx_id), Some(result.total_gas)).await {
+                            if let Err(e) = db.record_job_completed(
+                                rec_id,
+                                Some(&result.tx_id),
+                                Some(result.total_gas),
+                                Some(result.total_fee),
+                            ).await {
                                 error!(
                                     worker_id = self.id,
                                     error = %e,
@@ -283,6 +288,7 @@ impl FuelEOAWorker {
         Ok(InitCallSuccessData {
             tx_id,
             total_gas: tx_total_gas,
+            total_fee: tx_total_fee,
         })
     }
 
