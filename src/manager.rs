@@ -5,25 +5,30 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::Instant;
 use fuels::prelude::*;
-use fuels::types::Bytes32;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, error};
 
 use crate::error::{InitializationError, InitializationResult};
-use crate::types::{InitializationJob, InitializationConfig, WalletInitRequest, CompletionCallback};
+use crate::types::{CompletionCallback, InitCallSuccessData, InitializationConfig, InitializationJob, WalletInitRequest};
 use crate::stats::{ManagerStats, WorkerStats};
 use crate::worker::FuelEOAWorker;
 use crate::UnlockedWallet;
+use crate::db::InitializationDb;
 
+/// Internal job structure that includes database record ID
+pub struct InternalJob {
+    pub job: InitializationJob,
+    pub record_id: Option<i64>,
+}
 
 pub struct InitializationManager {
     /// Channel to send jobs to the load balancer
-    job_sender: mpsc::Sender<InitializationJob>,
-
+    job_sender: mpsc::Sender<InternalJob>,
     /// Statistics
     stats: Arc<Mutex<ManagerStats>>,
-
     /// Configuration
     config: InitializationConfig,
+    /// Database for tracking
+    db: Option<Arc<InitializationDb>>,
 }
 
 impl InitializationManager {
@@ -33,8 +38,36 @@ impl InitializationManager {
         provider: Arc<Provider>,
         config: InitializationConfig,
     ) -> Self {
+        Self::new_with_db(eoa_wallets, provider, config, None)
+    }
+
+    /// Create a new initialization manager with database
+    pub fn new_with_db(
+        eoa_wallets: Vec<UnlockedWallet>,
+        provider: Arc<Provider>,
+        config: InitializationConfig,
+        database_url: Option<String>,
+    ) -> Self {
         let (job_tx, job_rx) = mpsc::channel(config.max_queue_size);
         let stats = Arc::new(Mutex::new(ManagerStats::new()));
+
+        // Initialize database if URL provided
+        let db = if let Some(url) = database_url {
+            match tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(InitializationDb::new(&url))
+            }) {
+                Ok(database) => {
+                    info!("Connected to initialization tracking database");
+                    Some(Arc::new(database))
+                }
+                Err(e) => {
+                    error!("Failed to connect to database: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Store worker count before creating load balancer
         let worker_count = eoa_wallets.len();
@@ -45,7 +78,8 @@ impl InitializationManager {
             provider,
             config.clone(),
             job_rx,
-            stats.clone()
+            stats.clone(),
+            db.clone(),
         );
 
         tokio::spawn(load_balancer.run());
@@ -53,6 +87,7 @@ impl InitializationManager {
         info!(
             worker_count = worker_count,
             max_queue_size = config.max_queue_size,
+            database_enabled = db.is_some(),
             "Initialization manager started"
         );
 
@@ -60,6 +95,37 @@ impl InitializationManager {
             job_sender: job_tx,
             stats,
             config,
+            db,
+        }
+    }
+
+    /// Get database statistics
+    pub async fn get_db_stats(&self) -> Option<crate::db::InitStats> {
+        if let Some(db) = &self.db {
+            match db.get_stats().await {
+                Ok(stats) => Some(stats),
+                Err(e) => {
+                    error!("Failed to get database stats: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Get worker performance from database
+    pub async fn get_worker_performance(&self) -> Option<Vec<crate::db::WorkerPerformance>> {
+        if let Some(db) = &self.db {
+            match db.get_worker_stats().await {
+                Ok(stats) => Some(stats),
+                Err(e) => {
+                    error!("Failed to get worker performance: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
         }
     }
 
@@ -69,8 +135,24 @@ impl InitializationManager {
     }
 
     /// Submit a wallet for initialization
-    pub async fn initialize_wallet(&self, request: WalletInitRequest) -> InitializationResult<Bytes32> {
+    pub async fn initialize_wallet(&self, request: WalletInitRequest) -> InitializationResult<InitCallSuccessData> {
         let (response_tx, response_rx) = oneshot::channel();
+
+        // Record in database when job is queued
+        let record_id = if let Some(db) = &self.db {
+            match db.record_job_queued(&request.wallet_address).await {
+                Ok(id) => {
+                    debug!("Recorded job queued in database with ID: {}", id);
+                    Some(id)
+                }
+                Err(e) => {
+                    error!("Failed to record job in database: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         let job = InitializationJob {
             wallet_address: request.wallet_address,
@@ -80,7 +162,9 @@ impl InitializationManager {
             completion_callback: None,
         };
 
-        self.submit_job(job).await?;
+        let internal_job = InternalJob { job, record_id };
+
+        self.submit_job(internal_job).await?;
 
         // Wait for response
         response_rx.await?
@@ -94,6 +178,22 @@ impl InitializationManager {
     ) -> InitializationResult<()> {
         let (response_tx, response_rx) = oneshot::channel();
 
+        // Record in database when job is queued
+        let record_id = if let Some(db) = &self.db {
+            match db.record_job_queued(&request.wallet_address).await {
+                Ok(id) => {
+                    debug!("Recorded job queued in database with ID: {}", id);
+                    Some(id)
+                }
+                Err(e) => {
+                    error!("Failed to record job in database: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let job = InitializationJob {
             wallet_address: request.wallet_address,
             wallet_version: request.wallet_version,
@@ -102,7 +202,9 @@ impl InitializationManager {
             completion_callback: Some(callback),
         };
 
-        self.submit_job(job).await?;
+        let internal_job = InternalJob { job, record_id };
+
+        self.submit_job(internal_job).await?;
 
         // Spawn a task to handle the response
         tokio::spawn(async move {
@@ -113,7 +215,7 @@ impl InitializationManager {
         Ok(())
     }
 
-    async fn submit_job(&self, job: InitializationJob) -> InitializationResult<()> {
+    async fn submit_job(&self, job: InternalJob) -> InitializationResult<()> {
         // Update stats
         {
             let mut stats = self.stats.lock().await;
@@ -149,10 +251,10 @@ impl InitializationManager {
 
 struct LoadBalancer {
     /// Receiver for incoming jobs
-    job_receiver: mpsc::Receiver<InitializationJob>,
+    job_receiver: mpsc::Receiver<InternalJob>,
 
     /// Sender for each worker
-    worker_senders: Vec<mpsc::Sender<InitializationJob>>,
+    worker_senders: Vec<mpsc::Sender<InternalJob>>,
 
     /// Track queue depths for load balancing
     queue_depths: Vec<Arc<AtomicUsize>>,
@@ -172,8 +274,9 @@ impl LoadBalancer {
         eoa_wallets: Vec<UnlockedWallet>,
         provider: Arc<Provider>,
         config: InitializationConfig,
-        job_receiver: mpsc::Receiver<InitializationJob>,
+        job_receiver: mpsc::Receiver<InternalJob>,
         stats: Arc<Mutex<ManagerStats>>,
+        db: Option<Arc<InitializationDb>>,
     ) -> Self {
         let worker_count = eoa_wallets.len();
         let mut worker_senders = Vec::with_capacity(worker_count);
@@ -191,6 +294,7 @@ impl LoadBalancer {
                 worker_rx,
                 provider.clone(),
                 config.clone(),
+                db.clone(), // Pass database to worker
             );
 
             let worker_stat = worker.get_stats();
@@ -218,7 +322,7 @@ impl LoadBalancer {
     async fn run(mut self) {
         info!("Load balancer started with {} workers", self.worker_count);
 
-        while let Some(job) = self.job_receiver.recv().await {
+        while let Some(internal_job) = self.job_receiver.recv().await {
             // Find worker with smallest queue
             let worker_index = self.select_worker();
 
@@ -238,7 +342,7 @@ impl LoadBalancer {
             }
 
             // Send to selected worker
-            match self.worker_senders[worker_index].send(job).await {
+            match self.worker_senders[worker_index].send(internal_job).await {
                 Ok(_) => {
                     // Successfully sent
                 }

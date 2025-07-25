@@ -24,6 +24,8 @@ pub struct WorkerStats {
     #[serde(skip)]
     pub last_job_at: Option<Instant>,
     pub average_processing_time_ms: u64,
+    pub min_processing_time_ms: u64,
+    pub max_processing_time_ms: u64,
 }
 
 impl ManagerStats {

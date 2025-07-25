@@ -9,12 +9,6 @@ use crate::error::InitializationError;
 use zap_rs_sdk::core::version::ZapVersion;
 pub use ZapVersion::*;
 
-/// Version of the ZapWallet (you might want to import this from your SDK)
-// #[derive(Debug, Clone, Copy)]
-// pub enum ZapVersion {
-//     V1,
-//     V2,
-// }
 
 /// Key type for cache operations
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -75,6 +69,12 @@ pub struct WalletInitRequest {
     pub wallet_version: ZapVersion,
 }
 
+#[derive(Debug)]
+pub struct InitCallSuccessData {
+    pub tx_id: Bytes32,
+    pub total_gas: u64,
+}
+
 /// Internal job structure with cache references
 pub struct InitializationJob {
     /// The wallet we're initializing
@@ -82,7 +82,7 @@ pub struct InitializationJob {
     pub wallet_version: ZapVersion,
 
     /// Channel to send result back
-    pub response: oneshot::Sender<Result<Bytes32, InitializationError>>,
+    pub response: oneshot::Sender<Result<InitCallSuccessData, InitializationError>>,
 
     /// When the job was submitted (for metrics)
     pub submitted_at: Instant,

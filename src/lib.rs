@@ -12,6 +12,7 @@ pub mod types;
 pub mod stats;
 pub mod utils;
 pub mod consts;
+pub mod db;
 pub mod zap_manager;
 
 pub use error::{InitializationError, InitializationResult};
@@ -19,6 +20,7 @@ pub use manager::InitializationManager;
 pub use types::{InitializationJob, InitializationConfig, WalletInitRequest};
 pub use stats::{ManagerStats, WorkerStats};
 pub use utils::{get_test_wallet, create_test_wallets};
+pub use db::{InitializationDb, InitStats, WorkerPerformance};
 
 pub use zap_manager::ZapManager;
 
