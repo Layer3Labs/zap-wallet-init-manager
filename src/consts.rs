@@ -1,0 +1,16 @@
+
+
+pub const FUEL_BASE_ASSET: [u8; 32] = [
+    0xf8, 0xf8, 0xb6, 0x28, 0x3d, 0x7f, 0xa5, 0xb6,
+    0x72, 0xb5, 0x30, 0xcb, 0xb8, 0x4f, 0xcc, 0xcb,
+    0x4f, 0xf8, 0xdc, 0x40, 0xf8, 0x17, 0x6e, 0xf4,
+    0x54, 0x4d, 0xdb, 0x1f, 0x19, 0x52, 0xad, 0x07
+];
+
+pub const YELLOW: &str = "\x1b[93m"; // Bright Yellow
+pub const RED: &str = "\x1b[91m"; // Bright Red
+pub const GREEN: &str = "\x1b[92m"; // Bright Green
+pub const BLUE: &str = "\x1b[94m"; // Bright Blue
+pub const MAGENTA: &str = "\x1b[95m"; // Bright Magenta
+pub const CYAN: &str = "\x1b[96m"; // Bright Cyan
+pub const RESET: &str = "\x1b[0m"; // Reset to default
