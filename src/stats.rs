@@ -20,7 +20,7 @@ pub struct WorkerStats {
     pub total_failures: u64,
     pub current_queue_depth: usize,
     pub total_utxos: usize,
-    pub available_balance: u64,
+    pub available_balance: u128,
     #[serde(skip)]
     pub last_job_at: Option<Instant>,
     pub average_processing_time_ms: u64,

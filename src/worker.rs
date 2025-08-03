@@ -246,6 +246,9 @@ impl FuelEOAWorker {
         let tx_policies = TxPolicies::default()
             .with_tip(1);
 
+        // get the current block height so we can wait for inclusion
+        let t0_block_height = self.wallet.provider().latest_block_height().await?;
+
         // 2. Build and send the contract call transaction
         let tx_response = zap_manager
             .methods()
@@ -260,6 +263,23 @@ impl FuelEOAWorker {
 
         // Wait a bit for the transaction to be processed
         // tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        // Wait for 3 blocks
+        let blocks_to_wait = 3;
+        tracing::info!("⏳ Waiting for {} blocks...", blocks_to_wait);
+
+        loop {
+            let current_block_height = self.wallet.provider().latest_block_height().await?;
+            let blocks_passed = current_block_height.saturating_sub(t0_block_height);
+
+            if blocks_passed >= blocks_to_wait {
+                tracing::info!("---> {} blocks have passed", blocks_passed);
+                break;
+            }
+
+            // Wait a bit before checking again
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
 
 
         // let o = tx_response.decode_logs().results;
@@ -298,7 +318,7 @@ impl FuelEOAWorker {
         contract_id: ContractId,
     ) -> Result<ZapManager<UnlockedWallet>> {
 
-        println!("Using ZapManager at: 0x{}", hex::encode(&contract_id));
+        // println!("Using ZapManager at: 0x{}", hex::encode(&contract_id));
 
         Ok(ZapManager::new(contract_id, wallet))
     }
@@ -310,7 +330,7 @@ impl FuelEOAWorker {
 
         // Just check the wallet balance for monitoring
         let balance = self.provider
-            .get_asset_balance(self.wallet.address(), AssetId::from(FUEL_BASE_ASSET))
+            .get_asset_balance(&self.wallet.address(), &AssetId::from(FUEL_BASE_ASSET))
             .await
             .map_err(|e| InitializationError::UTXOError(format!("Failed to get balance: {}", e)))?;
 
