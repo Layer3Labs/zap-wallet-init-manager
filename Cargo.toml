@@ -8,10 +8,11 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 
-zap-rs-sdk = { path = "/media/catsper/data6/RPC-TESTING/FF/zap-rpc/crates/zap-rs-sdk" }
+# zap-rs-sdk = { path = "/media/catsper/data6/RPC-TESTING/FF/zap-rpc/crates/zap-rs-sdk" }
+zap-rs-sdk = { path = "../zap-rs-sdk" }
 
 # Fuel SDK
-fuels = "0.72.0"
+fuels = "0.74.0"
 
 tokio = { version = "1.35", features = ["full"] }
 rusqlite = { version = "0.32.0", default-features = false }

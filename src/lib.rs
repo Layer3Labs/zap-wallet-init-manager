@@ -23,6 +23,7 @@ pub use utils::{get_test_wallet, create_test_wallets};
 pub use db::{InitializationDb, InitStats, WorkerPerformance};
 
 pub use zap_manager::ZapManager;
+pub use consts::FUEL_BASE_ASSET;
 
 // Re-export commonly used types
 pub use fuels::accounts::wallet::{Wallet, Unlocked};
